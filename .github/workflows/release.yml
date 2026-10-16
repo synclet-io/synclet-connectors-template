@@ -14,6 +14,8 @@ concurrency:
 
 jobs:
   plan:
+    # The template repository itself never releases; repositories created from it do.
+    if: ${{ !github.event.repository.is_template }}
     runs-on: ubuntu-latest
     outputs:
       pending: ${{ steps.pending.outputs.releases }}
