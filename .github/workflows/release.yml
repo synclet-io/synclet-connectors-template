@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.pending.outputs.releases }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Validate
+        run: go run ./scripts validate
+
+      - name: Find versions without a release tag
+        id: pending
+        run: |
+          RELEASES=$(go run ./scripts pending)
+          echo "$RELEASES" | jq .
+          echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: plan
+    if: needs.plan.outputs.pending != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.pending) }}
+    env:
+      DIR: connectors/${{ matrix.connector }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve image name
+        id: image
+        run: |
+          REPO="ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.connector }}"
+          {
+            echo "repo=$REPO"
+            echo "license=$(jq -r .license "$DIR/meta.json")"
+            echo "title=$(jq -r .name "$DIR/meta.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build for spec check
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ env.DIR }}
+          platforms: linux/amd64
+          load: true
+          tags: local/${{ matrix.connector }}:check
+          cache-from: type=gha,scope=${{ matrix.connector }}
+
+      - name: spec.json matches the image
+        run: |
+          if ! diff -u <(jq -S . "$DIR/spec.json") <(docker run --rm --network none "local/${{ matrix.connector }}:check" spec | jq -S 'select(.type == "SPEC") | .spec'); then
+            echo "::error file=$DIR/spec.json::spec.json is out of date; run: task spec CONNECTOR=${{ matrix.connector }}"
+            exit 1
+          fi
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ env.DIR }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.repo }}:${{ matrix.version }}
+            ${{ steps.image.outputs.repo }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ matrix.version }}
+            org.opencontainers.image.title=${{ steps.image.outputs.title }}
+            org.opencontainers.image.licenses=${{ steps.image.outputs.license }}
+          cache-from: type=gha,scope=${{ matrix.connector }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.connector }}
+
+      - name: Tag release
+        run: |
+          git tag "${{ matrix.tag }}" "$GITHUB_SHA"
+          git push origin "refs/tags/${{ matrix.tag }}"
+
+  registry:
+    needs: [plan, release]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      pages: ${{ steps.target.outputs.pages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Generate registry.json
+        run: go run ./scripts registry --released-only --out _site/registry.json
+
+      - name: Publish targets
+        id: target
+        run: echo "pages=${{ vars.PUBLISH_PAGES != 'false' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: steps.target.outputs.pages == 'true'
+        with:
+          path: _site
+
+      - name: Push registry.json to the ${{ vars.REGISTRY_BRANCH }} branch
+        if: vars.REGISTRY_BRANCH != ''
+        env:
+          BRANCH: ${{ vars.REGISTRY_BRANCH }}
+        run: |
+          BLOB=$(git hash-object -w _site/registry.json)
+          TREE=$(printf '100644 blob %s\tregistry.json\n' "$BLOB" | git mktree)
+          COMMIT=$(git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit-tree "$TREE" -m "registry: ${GITHUB_SHA::7}")
+          git push -f origin "$COMMIT:refs/heads/$BRANCH"
+
+  pages:
+    needs: registry
+    if: ${{ !cancelled() && needs.registry.result == 'success' && needs.registry.outputs.pages == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}registry.json
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

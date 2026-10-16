@@ -1,0 +1,56 @@
+version: '3'
+
+vars:
+  IMAGE_PREFIX: '{{.IMAGE_PREFIX | default "ghcr.io/your-org/your-registry"}}'
+
+tasks:
+  validate:
+    desc: Validate every connectors/*/meta.json and spec.json against schema/meta.schema.json
+    cmds:
+      - go run ./scripts validate
+
+  build:
+    desc: Build one connector image for the local platform (CONNECTOR=source-example)
+    requires:
+      vars: [CONNECTOR]
+    cmds:
+      - docker build -t {{.IMAGE_PREFIX}}/{{.CONNECTOR}}:dev connectors/{{.CONNECTOR}}
+
+  test:
+    desc: Run a connector's Go tests (CONNECTOR=source-example)
+    requires:
+      vars: [CONNECTOR]
+    dir: connectors/{{.CONNECTOR}}
+    cmds:
+      - go vet ./...
+      - go test ./... -count=1
+
+  spec:
+    desc: Build a connector and write the output of its `spec` command to spec.json
+    requires:
+      vars: [CONNECTOR]
+    deps:
+      - task: build
+        vars: { CONNECTOR: '{{.CONNECTOR}}' }
+    cmds:
+      - >-
+        docker run --rm --network none {{.IMAGE_PREFIX}}/{{.CONNECTOR}}:dev spec
+        | jq -S 'select(.type == "SPEC") | .spec' > connectors/{{.CONNECTOR}}/spec.json
+      - jq -e .connectionSpecification connectors/{{.CONNECTOR}}/spec.json > /dev/null
+
+  spec:check:
+    desc: Fail if spec.json differs from what the connector image reports
+    requires:
+      vars: [CONNECTOR]
+    deps:
+      - task: build
+        vars: { CONNECTOR: '{{.CONNECTOR}}' }
+    cmds:
+      - >-
+        diff -u <(jq -S . connectors/{{.CONNECTOR}}/spec.json)
+        <(docker run --rm --network none {{.IMAGE_PREFIX}}/{{.CONNECTOR}}:dev spec | jq -S 'select(.type == "SPEC") | .spec')
+
+  registry:
+    desc: Generate dist/registry.json from every connector (IMAGE_PREFIX=ghcr.io/org/repo)
+    cmds:
+      - go run ./scripts registry --image-prefix {{.IMAGE_PREFIX}} --out dist/registry.json
