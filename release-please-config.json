@@ -4,8 +4,8 @@
   "include-component-in-tag": true,
   "include-v-in-tag": true,
   "tag-separator": "-",
-  "separate-pull-requests": true,
-  "pull-request-title-pattern": "chore: release${component} ${version}",
+  "separate-pull-requests": false,
+  "group-pull-request-title-pattern": "chore: release connectors",
   "initial-version": "0.1.0",
   "packages": {
     "connectors/source-example": {

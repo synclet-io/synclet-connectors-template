@@ -72,18 +72,18 @@ Point `documentation_url` in `meta.json` and `DocumentationURL` in the spec at y
 `source-example` (its directory and its release-please entries) once you have your own connector.
 
 Open a pull request; CI validates the metadata and, for the changed connectors, runs vet, golangci-lint and
-`go test -race`, builds the image and checks `spec.json` against it. After merging, release-please opens the
-connector's first release pull request at `0.1.0`.
+`go test -race`, builds the image and checks `spec.json` against it. After merging, release-please adds the
+connector to the release pull request at `0.1.0`.
 
 ### 5. Release with release-please
 
 Later changes are released from [Conventional Commits](https://www.conventionalcommits.org) scoped to the
 connector directory, for example `fix(source-acme): retry on HTTP 429`. After each push to `main`, release-please
-opens or updates one pull request per connector with releasable changes, `chore: release <dir> <version>`, which
-bumps `meta.json`, the manifest and the connector's `CHANGELOG.md`. Dependabot opens weekly `fix` pull requests per
+opens or updates one pull request, `chore: release connectors`, for every connector with releasable changes; it
+bumps each one's `meta.json`, manifest entry and `CHANGELOG.md`. Dependabot opens weekly `fix` pull requests per
 connector directory, so dependency bumps are released too.
 
-Merging the release pull request creates the tag `<dir>-v<version>`, and the release workflow builds and pushes
+Merging the release pull request creates a tag `<dir>-v<version>` per included connector, and for each the release workflow builds and pushes
 `ghcr.io/<owner>/<repo>/<dir>:<version>` (and `:latest`) for linux/amd64 and linux/arm64, then runs `spec` on the
 pushed image for both platforms and checks that the image can be pulled anonymously. Once it succeeds, the
 Registry workflow rebuilds `registry.json` from every connector's newest published release and deploys it to
@@ -121,8 +121,9 @@ pull request / main ──► ci.yml
                            for testcontainers), docker build, spec.json == `spec` output
 
 main ─────────────────► release-please.yml
-                        └─ one release pull request per connector with releasable commits; merging it
-                           bumps meta.json and CHANGELOG.md and creates the tag <dir>-v<version>
+                        └─ one release pull request for every connector with releasable commits; merging
+                           it bumps their meta.json and CHANGELOG.md and creates a tag <dir>-v<version>
+                           per connector
 
 tag <dir>-v<version> ──► release.yml
                         ├─ plan: the tag must match connectors/<dir>/meta.json's version
