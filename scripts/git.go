@@ -3,11 +3,8 @@ package main
 import (
 	"fmt"
 	"os/exec"
-	"path"
 	"sort"
 	"strings"
-
-	"golang.org/x/mod/semver"
 )
 
 func git(root string, args ...string) (string, error) {
@@ -24,50 +21,6 @@ func git(root string, args ...string) (string, error) {
 	}
 
 	return strings.TrimSpace(string(out)), nil
-}
-
-func gitTags(root string) (map[string]bool, error) {
-	out, err := git(root, "tag", "--list")
-	if err != nil {
-		return nil, err
-	}
-
-	tags := map[string]bool{}
-	for _, t := range strings.Fields(out) {
-		tags[t] = true
-	}
-
-	return tags, nil
-}
-
-func gitShowReader(root, tag, dir string) fileReader {
-	return func(name string) ([]byte, error) {
-		out, err := git(root, "show", tag+":"+connectorsDir+"/"+dir+"/"+name)
-		if err != nil {
-			return nil, err
-		}
-
-		return []byte(out), nil
-	}
-}
-
-// latestReleaseTag returns the highest-versioned <dir>-v<semver> tag, or "" when the connector was never released.
-func latestReleaseTag(tags map[string]bool, dir string) string {
-	prefix := dir + "-v"
-	best, bestVersion := "", ""
-
-	for tag := range tags {
-		version, ok := strings.CutPrefix(tag, prefix)
-		if !ok || !semver.IsValid("v"+version) {
-			continue
-		}
-
-		if best == "" || semver.Compare("v"+version, "v"+bestVersion) > 0 {
-			best, bestVersion = tag, version
-		}
-	}
-
-	return best
 }
 
 // changedFiles groups files changed between base and HEAD by connector directory.
@@ -100,19 +53,4 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(keys)
 
 	return keys
-}
-
-// affectsImage reports whether a changed file ends up in the connector image.
-// Docs, metadata and the checked-in spec do not, so they never require a version bump.
-func affectsImage(file string) bool {
-	switch {
-	case file == "meta.json", file == "spec.json":
-		return false
-	case strings.HasSuffix(file, ".md"):
-		return false
-	case strings.HasSuffix(path.Base(file), "_test.go"):
-		return false
-	}
-
-	return true
 }

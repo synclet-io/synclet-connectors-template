@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -152,8 +153,13 @@ func toEntry(c Connector, imagePrefix string) Entry {
 	return entry
 }
 
-func defaultImagePrefix(env func(string) string) (string, error) {
-	repo := env("GITHUB_REPOSITORY")
+// resolveImagePrefix defaults to ghcr.io/$GITHUB_REPOSITORY inside GitHub Actions.
+func resolveImagePrefix(prefix string) (string, error) {
+	if prefix != "" {
+		return prefix, nil
+	}
+
+	repo := os.Getenv("GITHUB_REPOSITORY")
 	if repo == "" {
 		return "", fmt.Errorf("--image-prefix is required outside GitHub Actions")
 	}

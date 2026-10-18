@@ -1,9 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
-	airbyte "github.com/saturn4er/airbyte-go-sdk"
+	synclet "github.com/synclet-io/synclet-go-sdk"
 )
 
 const (
@@ -12,7 +13,8 @@ const (
 	maxCount     = 1_000_000
 )
 
-// Config is the user-supplied connector configuration.
+// Config is the connector configuration; the SDK decodes it from the
+// configuration JSON before every command.
 type Config struct {
 	Count int `json:"count"`
 }
@@ -21,7 +23,6 @@ func (c Config) rowCount() int {
 	if c.Count == 0 {
 		return defaultCount
 	}
-
 	return c.Count
 }
 
@@ -29,39 +30,33 @@ func (c Config) validate() error {
 	if c.Count < 0 || c.Count > maxCount {
 		return fmt.Errorf("count must be between 1 and %d", maxCount)
 	}
-
 	return nil
 }
 
-// ExampleSource emits a fixed number of generated rows into a single stream.
-type ExampleSource struct{}
-
-// NewExampleSource creates the example source.
-func NewExampleSource() *ExampleSource {
-	return &ExampleSource{}
+func typed(t synclet.PropType) synclet.PropertyType {
+	return synclet.PropertyType{Type: synclet.PropTypes{t}}
 }
 
 // Spec describes the configuration form Synclet renders for this connector.
-func (s *ExampleSource) Spec(_ airbyte.LogTracker) (*airbyte.ConnectorSpecification, error) {
+func (Source) Spec(_ context.Context) (*synclet.ConnectorSpecification, error) {
 	order := 0
-
-	return &airbyte.ConnectorSpecification{
-		DocumentationURL: "https://github.com/synclet-io/synclet",
-		SupportedDestinationSyncModes: []airbyte.DestinationSyncMode{
-			airbyte.DestinationSyncModeOverwrite,
-			airbyte.DestinationSyncModeAppend,
+	return &synclet.ConnectorSpecification{
+		DocumentationURL: "https://github.com/synclet-io/synclet-connectors-template/tree/main/connectors/source-example",
+		ProtocolVersion:  "0.5.2",
+		SupportedDestinationSyncModes: []synclet.DestinationSyncMode{
+			synclet.DestinationSyncModeOverwrite,
+			synclet.DestinationSyncModeAppend,
 		},
-		ConnectionSpecification: airbyte.ConnectionSpecification{
+		ConnectionSpecification: synclet.ConnectionSpecification{
 			Title:       "Example Source Spec",
 			Description: "Generates a sequence of numbered rows",
 			Type:        "object",
-			Required:    []airbyte.PropertyName{},
-			Properties: airbyte.Properties{
-				Properties: map[airbyte.PropertyName]airbyte.PropertySpec{
+			Properties: synclet.Properties{
+				Properties: map[synclet.PropertyName]synclet.PropertySpec{
 					"count": {
 						Title:        "Row count",
 						Description:  fmt.Sprintf("Number of rows to emit (1-%d)", maxCount),
-						PropertyType: airbyte.PropertyType{Type: []airbyte.PropType{airbyte.Integer}},
+						PropertyType: typed(synclet.Integer),
 						Default:      defaultCount,
 						Order:        &order,
 					},
@@ -71,67 +66,44 @@ func (s *ExampleSource) Spec(_ airbyte.LogTracker) (*airbyte.ConnectorSpecificat
 	}, nil
 }
 
-// Check validates the configuration. A real connector would also try to reach its upstream here.
-func (s *ExampleSource) Check(cfgPath string, logTracker airbyte.LogTracker) error {
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		return err
-	}
-
-	if err := cfg.validate(); err != nil {
-		return err
-	}
-
-	return logTracker.Log(airbyte.LogLevelInfo, "configuration is valid")
+// Check validates the configuration. A real connector also reaches its
+// upstream here; the returned error becomes the FAILED status message.
+func (Source) Check(_ context.Context, cfg Config) error {
+	return cfg.validate()
 }
 
 // Discover returns the single stream this source produces.
-func (s *ExampleSource) Discover(_ string, _ airbyte.LogTracker) (*airbyte.Catalog, error) {
-	return &airbyte.Catalog{Streams: []airbyte.Stream{{
+func (Source) Discover(_ context.Context, _ Config) (*synclet.Catalog, error) {
+	return &synclet.Catalog{Streams: []synclet.Stream{{
 		Name: streamName,
-		JSONSchema: airbyte.Properties{
-			Properties: map[airbyte.PropertyName]airbyte.PropertySpec{
-				"id":    {PropertyType: airbyte.PropertyType{Type: []airbyte.PropType{airbyte.Integer}}},
-				"label": {PropertyType: airbyte.PropertyType{Type: []airbyte.PropType{airbyte.String}}},
-			},
-		},
-		SupportedSyncModes:      []airbyte.SyncMode{airbyte.SyncModeFullRefresh},
+		JSONSchema: synclet.ObjectSchema(map[synclet.PropertyName]synclet.PropertySpec{
+			"id":    {PropertyType: typed(synclet.Integer)},
+			"label": {PropertyType: typed(synclet.String)},
+		}),
+		SupportedSyncModes:      []synclet.SyncMode{synclet.SyncModeFullRefresh},
 		SourceDefinedPrimaryKey: [][]string{{"id"}},
 	}}}, nil
 }
 
-// Read emits one RECORD message per generated row for every selected stream.
-func (s *ExampleSource) Read(cfgPath, _ string, catalog *airbyte.ConfiguredCatalog, tracker airbyte.MessageTracker) error {
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		return err
-	}
-
+// Read emits one record per generated row for every configured stream and
+// stops when ctx is cancelled.
+func (Source) Read(ctx context.Context, cfg Config, catalog *synclet.ConfiguredCatalog, _ *synclet.InputState, em *synclet.Emitter) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-
 	for _, cs := range catalog.Streams {
 		if cs.Stream.Name != streamName {
 			return fmt.Errorf("unknown stream %q", cs.Stream.Name)
 		}
-
+		desc := cs.Stream.Descriptor()
 		for i := 1; i <= cfg.rowCount(); i++ {
-			record := map[string]any{"id": i, "label": fmt.Sprintf("row %d", i)}
-			if err := tracker.Record(record, streamName, cs.Stream.Namespace); err != nil {
-				return fmt.Errorf("emitting record: %w", err)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := em.Record(desc, map[string]any{"id": i, "label": fmt.Sprintf("row %d", i)}); err != nil {
+				return fmt.Errorf("emit record: %w", err)
 			}
 		}
 	}
-
 	return nil
-}
-
-func loadConfig(path string) (Config, error) {
-	var cfg Config
-	if err := airbyte.UnmarshalFromPath(path, &cfg); err != nil {
-		return Config{}, fmt.Errorf("loading configuration: %w", err)
-	}
-
-	return cfg, nil
 }

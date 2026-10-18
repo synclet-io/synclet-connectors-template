@@ -3,12 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -21,24 +23,34 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A push that creates the branch has no previous commit; diff against the empty tree then.
+      - name: Resolve diff base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=$(git hash-object -t tree /dev/null)
+          fi
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
+      - name: Test scripts
+        run: go test ./scripts -count=1
+
       - name: Validate meta.json and spec.json
         run: go run ./scripts validate
 
-      - name: Require a version bump for changed connectors
-        run: go run ./scripts check-versions --base "${{ github.event.pull_request.base.sha }}"
-
-      - name: Generate registry.json (dry run)
+      - name: Generate registry entries (dry run)
         run: |
-          go run ./scripts registry --out dist/registry.json
+          go run ./scripts registry --image-prefix "ghcr.io/${GITHUB_REPOSITORY,,}" --out dist/registry.json
           jq '{sources: [.sources[] | {name, dockerRepository, dockerImageTag}], destinations: [.destinations[] | {name, dockerRepository, dockerImageTag}]}' dist/registry.json
 
       - name: Detect changed connectors
         id: changed
-        run: echo "connectors=$(go run ./scripts changed --base "${{ github.event.pull_request.base.sha }}")" >> "$GITHUB_OUTPUT"
+        run: echo "connectors=$(go run ./scripts changed --base "$BASE")" >> "$GITHUB_OUTPUT"
 
   connector:
     needs: validate
@@ -64,12 +76,23 @@ jobs:
           go-version-file: ${{ env.DIR }}/go.mod
           cache-dependency-path: ${{ env.DIR }}/go.sum
 
+      - name: Vet
+        if: steps.lang.outputs.go == 'true'
+        working-directory: ${{ env.DIR }}
+        run: go vet ./...
+
+      - name: Lint
+        if: steps.lang.outputs.go == 'true'
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.11.4
+          working-directory: ${{ env.DIR }}
+
+      # The runner's Docker daemon is available, so testcontainers-based tests run here.
       - name: Test
         if: steps.lang.outputs.go == 'true'
         working-directory: ${{ env.DIR }}
-        run: |
-          go vet ./...
-          go test ./... -count=1
+        run: go test -race ./... -count=1
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 

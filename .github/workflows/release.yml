@@ -1,16 +1,25 @@
 name: Release
 
+# One connector per tag: pushing <dir>-v<version> (for example source-postgres-v0.2.0) releases
+# connectors/<dir> at that version. meta.json must declare the same version.
 on:
   push:
-    branches: [main]
+    tags: ['*-v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)run, e.g. source-postgres-v0.2.0
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: release
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   plan:
@@ -18,11 +27,12 @@ jobs:
     if: ${{ !github.event.repository.is_template }}
     runs-on: ubuntu-latest
     outputs:
-      pending: ${{ steps.pending.outputs.releases }}
+      connector: ${{ steps.release.outputs.connector }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          ref: refs/tags/${{ env.TAG }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -31,33 +41,35 @@ jobs:
       - name: Validate
         run: go run ./scripts validate
 
-      - name: Find versions without a release tag
-        id: pending
+      - name: Resolve the tag to a connector
+        id: release
         run: |
-          RELEASES=$(go run ./scripts pending)
-          echo "$RELEASES" | jq .
-          echo "releases=$RELEASES" >> "$GITHUB_OUTPUT"
+          RELEASE=$(go run ./scripts release --tag "$TAG")
+          echo "$RELEASE" | jq .
+          echo "connector=$(echo "$RELEASE" | jq -r .connector)" >> "$GITHUB_OUTPUT"
+          echo "version=$(echo "$RELEASE" | jq -r .version)" >> "$GITHUB_OUTPUT"
 
-  release:
+  image:
     needs: plan
-    if: needs.plan.outputs.pending != '[]'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.pending) }}
+    outputs:
+      repo: ${{ steps.image.outputs.repo }}
     env:
-      DIR: connectors/${{ matrix.connector }}
+      CONNECTOR: ${{ needs.plan.outputs.connector }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      DIR: connectors/${{ needs.plan.outputs.connector }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
 
       - name: Resolve image name
         id: image
         run: |
-          REPO="ghcr.io/${GITHUB_REPOSITORY,,}/${{ matrix.connector }}"
+          REPO="ghcr.io/${GITHUB_REPOSITORY,,}/$CONNECTOR"
           {
             echo "repo=$REPO"
             echo "license=$(jq -r .license "$DIR/meta.json")"
@@ -68,19 +80,19 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Build for spec check
+      - name: Build for the pre-push spec check
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ env.DIR }}
           platforms: linux/amd64
           load: true
-          tags: local/${{ matrix.connector }}:check
-          cache-from: type=gha,scope=${{ matrix.connector }}
+          tags: local/${{ env.CONNECTOR }}:check
+          cache-from: type=gha,scope=${{ env.CONNECTOR }}
 
       - name: spec.json matches the image
         run: |
-          if ! diff -u <(jq -S . "$DIR/spec.json") <(docker run --rm --network none "local/${{ matrix.connector }}:check" spec | jq -S 'select(.type == "SPEC") | .spec'); then
-            echo "::error file=$DIR/spec.json::spec.json is out of date; run: task spec CONNECTOR=${{ matrix.connector }}"
+          if ! diff -u <(jq -S . "$DIR/spec.json") <(docker run --rm --network none "local/$CONNECTOR:check" spec | jq -S 'select(.type == "SPEC") | .spec'); then
+            echo "::error file=$DIR/spec.json::spec.json is out of date; run: task spec CONNECTOR=$CONNECTOR"
             exit 1
           fi
 
@@ -97,72 +109,39 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ steps.image.outputs.repo }}:${{ matrix.version }}
+            ${{ steps.image.outputs.repo }}:${{ env.VERSION }}
             ${{ steps.image.outputs.repo }}:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ matrix.version }}
+            org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.title=${{ steps.image.outputs.title }}
             org.opencontainers.image.licenses=${{ steps.image.outputs.license }}
-          cache-from: type=gha,scope=${{ matrix.connector }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.connector }}
+          cache-from: type=gha,scope=${{ env.CONNECTOR }}
+          cache-to: type=gha,mode=max,scope=${{ env.CONNECTOR }}
 
-      - name: Tag release
-        run: |
-          git tag "${{ matrix.tag }}" "$GITHUB_SHA"
-          git push origin "refs/tags/${{ matrix.tag }}"
-
-  registry:
-    needs: [plan, release]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      pages: ${{ steps.target.outputs.pages }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Generate registry.json
-        run: go run ./scripts registry --released-only --out _site/registry.json
-
-      - name: Publish targets
-        id: target
-        run: echo "pages=${{ vars.PUBLISH_PAGES != 'false' }}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        if: steps.target.outputs.pages == 'true'
-        with:
-          path: _site
-
-      - name: Push registry.json to the ${{ vars.REGISTRY_BRANCH }} branch
-        if: vars.REGISTRY_BRANCH != ''
+      - name: Run spec on the pushed image (amd64 and arm64)
         env:
-          BRANCH: ${{ vars.REGISTRY_BRANCH }}
+          IMAGE: ${{ steps.image.outputs.repo }}:${{ env.VERSION }}
         run: |
-          BLOB=$(git hash-object -w _site/registry.json)
-          TREE=$(printf '100644 blob %s\tregistry.json\n' "$BLOB" | git mktree)
-          COMMIT=$(git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit-tree "$TREE" -m "registry: ${GITHUB_SHA::7}")
-          git push -f origin "$COMMIT:refs/heads/$BRANCH"
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "$platform" "$IMAGE"
+            if ! diff -u <(jq -S . "$DIR/spec.json") <(docker run --rm --network none --platform "$platform" "$IMAGE" spec | jq -S 'select(.type == "SPEC") | .spec'); then
+              echo "::error file=$DIR/spec.json::$IMAGE ($platform) reports a spec that differs from spec.json; run: task spec CONNECTOR=$CONNECTOR"
+              exit 1
+            fi
+          done
 
-  pages:
-    needs: registry
-    if: ${{ !cancelled() && needs.registry.result == 'success' && needs.registry.outputs.pages == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}registry.json
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      # Synclet pulls connector images anonymously, so a registry entry for a private image is unusable.
+      - name: Image is publicly pullable
+        env:
+          REPO: ${{ steps.image.outputs.repo }}
+        run: |
+          NAME=${REPO#ghcr.io/}
+          TOKEN=$(curl -fsS "https://ghcr.io/token?scope=repository:$NAME:pull" | jq -r .token)
+          if ! curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/$NAME/manifests/$VERSION"; then
+            echo "::error::$REPO is not public. Make the package public (Packages -> $CONNECTOR -> Package settings -> Change visibility), then re-run this workflow for $TAG."
+            exit 1
+          fi

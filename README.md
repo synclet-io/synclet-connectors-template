@@ -1,172 +1,176 @@
-# Synclet connector registry template
+# Synclet connectors template
 
-A template for running your own [Synclet](https://github.com/synclet-io/synclet) connector registry:
-a repository of Airbyte-protocol connectors whose images are built and pushed to GitHub Container
-Registry, plus a `registry.json` catalog that Synclet syncs to offer those connectors in its UI.
-
-Everything runs on GitHub Actions with the default `GITHUB_TOKEN`. No secrets to configure.
+A template for your own [Synclet](https://github.com/synclet-io/synclet) connectors repository: connectors written
+in Go on [synclet-go-sdk](https://github.com/synclet-io/synclet-go-sdk), shipped as multi-arch Docker images on
+GHCR and listed in a connector registry (`registry.json`) on GitHub Pages that Synclet reads from. It has the same
+layout, scripts, CI and release flow as [synclet-io/connectors](https://github.com/synclet-io/connectors).
 
 ```
-connectors/<name>/        one connector per directory: Dockerfile, meta.json, spec.json, code
+connectors/<name>/        one connector per directory: Dockerfile, meta.json, spec.json, Go code
 schema/meta.schema.json   JSON Schema every meta.json is validated against
-scripts/                  Go tool: validate metadata, generate registry.json, plan releases
-.github/workflows/        ci.yml (pull requests), release.yml (main)
+scripts/                  Go tool: validate metadata, resolve release tags, build registry.json
+.github/workflows/        ci.yml (pull requests, main), release-please.yml (main), release.yml (release tags),
+                          registry.yml (after each release)
+release-please-config.json, .release-please-manifest.json   one release-please package per connector
 Taskfile.yml              local shortcuts
 ```
 
-## Use this template
+Images are pushed as `ghcr.io/<owner>/<repo>/<connector>` and the registry is published at
+`https://<owner>.github.io/<repo>/registry.json`; both follow from the repository's name, so nothing needs
+editing after a rename. The release, release-please and registry workflows check `is_template` and do nothing in
+the template repository (synclet-io/synclet-connectors-template) itself.
 
-1. Click **Use this template → Create a new repository**. Pick the owner whose GHCR namespace should
-   hold the images; images are published as `ghcr.io/<owner>/<repo>/<connector>`.
-2. **Settings → Pages → Build and deployment → Source: GitHub Actions.** Needed once, before the
-   first release run, or the `pages` job fails. Skip this for a private registry (see below).
-3. **Settings → Actions → General → Workflow permissions:** leave the default; each job requests the
-   permissions it needs (`packages: write`, `contents: write`, `pages: write`).
-4. Replace `source-example` with your own connectors, or keep it to try the flow end to end.
-5. Push to `main`. The release workflow builds and pushes every connector that has not been released
-   yet, tags it, and publishes:
+## Setup
 
-   ```
-   https://<owner>.github.io/<repo>/registry.json
-   ```
+### 1. Create your repository
 
-6. The first push of each image creates a **private** GHCR package. For a public registry open
-   **Packages → \<connector\> → Package settings → Change visibility → Public** once per connector.
-   Synclet executors pull images anonymously unless configured otherwise (see below).
+Click **Use this template → Create a new repository** on
+[synclet-io/synclet-connectors-template](https://github.com/synclet-io/synclet-connectors-template). The repository
+can be public or private; the images must be public either way (see step 6).
+
+### 2. Create a GitHub App for releases
+
+Tags and pull requests created with the default `GITHUB_TOKEN` start no workflows, so release-please runs with a
+token minted from a GitHub App:
+
+1. **Settings → Developer settings → GitHub Apps → New GitHub App** (under your organization's settings for an
+   organization repository). Any name and homepage URL; untick **Webhook → Active**.
+2. **Repository permissions**: **Contents**, **Pull requests** and **Issues**: **Read and write**.
+3. Create the App, note its **App ID**, then **Generate a private key** (a `.pem` file is downloaded).
+4. **Install App** → choose your account or organization → **Only select repositories** → your new repository.
+5. In your repository, **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Value |
+|---|---|
+| `RELEASE_APP_ID` | The App ID |
+| `RELEASE_APP_PRIVATE_KEY` | The full contents of the `.pem` file |
+
+### 3. Enable GitHub Pages
+
+The registry is deployed by a workflow, so Pages must use the **GitHub Actions** source: **Settings → Pages →
+Build and deployment → Source: GitHub Actions**, or
+
+```bash
+gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow
+```
+
+The `github-pages` environment this creates lets only `main` deploy, which is where `registry.yml` runs.
+
+### 4. Add a connector
+
+Copy `connectors/source-example`, write the connector, fill `meta.json` and generate `spec.json`;
+[CONTRIBUTING.md](CONTRIBUTING.md) walks through it. Add a package for it to `release-please-config.json` and its
+directory to `.release-please-manifest.json` at its `meta.json` version (`0.1.0`), or `task validate` fails.
+Point `documentation_url` in `meta.json` and `DocumentationURL` in the spec at your repository, or delete
+`source-example` (its directory and its release-please entries) once you have your own connector.
+
+Open a pull request; CI validates the metadata and, for the changed connectors, runs vet, golangci-lint and
+`go test -race`, builds the image and checks `spec.json` against it. After merging, release the connector's first
+version, which creates its tag and the GitHub release that release-please counts later changes from:
+
+```bash
+gh release create source-acme-v0.1.0 --target main --title "source-acme 0.1.0" --notes "Initial release"
+```
+
+### 5. Release with release-please
+
+Later changes are released from [Conventional Commits](https://www.conventionalcommits.org) scoped to the
+connector directory, for example `fix(source-acme): retry on HTTP 429`. After each push to `main`, release-please
+opens or updates one pull request per connector with releasable changes, `chore(<dir>): release <version>`, which
+bumps `meta.json`, the manifest and the connector's `CHANGELOG.md`. Dependabot opens weekly `fix` pull requests per
+connector directory, so dependency bumps are released too.
+
+Merging the release pull request creates the tag `<dir>-v<version>`, and the release workflow builds and pushes
+`ghcr.io/<owner>/<repo>/<dir>:<version>` (and `:latest`) for linux/amd64 and linux/arm64, then runs `spec` on the
+pushed image for both platforms and checks that the image can be pulled anonymously. Once it succeeds, the
+Registry workflow rebuilds `registry.json` from every connector's newest published release and deploys it to
+Pages. A failed release can be re-run from **Actions → Release → Run workflow** with the same tag;
+**Actions → Registry → Run workflow** republishes the registry by hand.
+
+### 6. Make each image public
+
+The first push of a connector creates a **private** GHCR package. Synclet pulls images anonymously, so the
+release fails at "Image is publicly pullable" until the package is public: open the package (your profile or
+organization → **Packages** → `<repo>/<connector>`) → **Package settings → Change visibility → Public**, once
+per connector, then re-run the release for the same tag.
+
+### 7. Add the registry to Synclet
+
+In Synclet open **Settings → Connectors → Add Repository** and enter a name and the registry URL:
+
+```
+https://<owner>.github.io/<repo>/registry.json
+```
+
+The Registry workflow run links the deployed file from its `github-pages` environment. Synclet fetches the file
+immediately (the repository is not saved if that fails) and re-syncs it every
+`PIPELINE_JOB_REPOSITORY_SYNC_INTERVAL` (default `1h`); **Sync** on the repository refreshes it on demand.
+Connectors removed from the file, or marked `tombstone`, disappear from the catalog on the next sync.
 
 ## How it works
 
 ```
-pull request ──► ci.yml
-                 ├─ validate every meta.json against schema/meta.schema.json
-                 ├─ fail if a connector's code changed but its version is already released
-                 ├─ dry-run registry.json generation
-                 └─ per changed connector: go vet/test (Go only), docker build, spec.json == `spec` output
+pull request / main ──► ci.yml
+                        ├─ test the scripts, validate every meta.json and spec.json
+                        ├─ check release-please lists every connector at its meta.json version
+                        ├─ dry-run registry entry generation
+                        └─ per changed connector: go vet, golangci-lint, go test -race (Docker available
+                           for testcontainers), docker build, spec.json == `spec` output
 
-push to main ──► release.yml
-                 ├─ plan: connectors whose meta.json version has no <connector>-v<version> tag
-                 ├─ release (per pending connector): build linux/amd64 + linux/arm64, push
-                 │     ghcr.io/<owner>/<repo>/<connector>:<version> and :latest, push the git tag
-                 ├─ registry: generate registry.json from released connectors
-                 └─ pages: deploy registry.json to GitHub Pages
+main ─────────────────► release-please.yml
+                        └─ one release pull request per connector with releasable commits; merging it
+                           bumps meta.json and CHANGELOG.md and creates the tag <dir>-v<version>
+
+tag <dir>-v<version> ──► release.yml
+                        ├─ plan: the tag must match connectors/<dir>/meta.json's version
+                        └─ image: spec check, build linux/amd64 + linux/arm64, push
+                              ghcr.io/<owner>/<repo>/<dir>:<version> and :latest,
+                              run `spec` on the pushed image for both platforms, check it is public
+
+Release succeeded ────► registry.yml (on main)
+                        └─ rebuild registry.json from every connector's newest published release and
+                           deploy it to GitHub Pages
 ```
 
-Versioning is per connector and driven by `meta.json`: bump `version`, merge, and that version is
-released and tagged `<connector>-v<version>`. Merging without a bump releases nothing, so the release
-workflow is idempotent; re-running it after a failure only retries what is still untagged. The release
-tags are pushed with `GITHUB_TOKEN`, which does not trigger further workflow runs. If you protect tags
-with rulesets, allow GitHub Actions to create `*-v*` tags.
-
-### How registry.json is produced
-
-`go run ./scripts registry` (or `task registry`) reads every `connectors/*/meta.json` and
-`connectors/*/spec.json` and writes the [Airbyte OSS registry
-format](https://connectors.airbyte.com/files/registries/v0/oss_registry.json) that Synclet parses:
-
-```json
-{
-  "sources": [
-    {
-      "name": "Example",
-      "dockerRepository": "ghcr.io/acme/connectors/source-example",
-      "dockerImageTag": "0.1.0",
-      "releaseStage": "alpha",
-      "supportLevel": "community",
-      "sourceType": "api",
-      "license": "MIT",
-      "tombstone": false,
-      "spec": { "connectionSpecification": { "type": "object", "properties": { "count": { "type": ["integer"] } } } }
-    }
-  ],
-  "destinations": []
-}
-```
-
-- `dockerRepository` is `ghcr.io/<owner>/<repo>/<directory>` in lower case (`--image-prefix` overrides it).
-- `dockerImageTag` is `meta.json`'s `version`; the other fields map one to one, as documented in the schema.
-- `spec` is the checked-in `spec.json`, the exact output of the image's `spec` command. Checking it in
-  keeps registry generation fast and independent of registry credentials; CI rebuilds the image and fails
-  when the file is stale.
-- In the release workflow `--released-only` describes each connector as of its newest release tag: if a
-  bumped version failed to build, the registry keeps serving the previous version instead of pointing at
-  an image tag that does not exist. Connectors that were never released are left out.
+`registry.yml` builds the file with `go run ./scripts registry --released`: for every connector directory it
+takes the newest `<dir>-v<version>` tag whose image can be pulled anonymously and reads `meta.json` and
+`spec.json` as of that tag. A release that is still running or failed is never listed, tags of deleted
+connector directories are ignored, and two releases finishing in either order publish the same file. Entries use
+the [Airbyte OSS registry format](https://connectors.airbyte.com/files/registries/v0/oss_registry.json).
 
 ## Local development
 
-Requires Go 1.25+, Docker, [Task](https://taskfile.dev) and `jq`.
+Requires Go 1.26+, Docker, [Task](https://taskfile.dev), `jq` and golangci-lint v2.
 
 ```bash
 task validate                                   # schema-check every meta.json and spec.json
 task test CONNECTOR=source-example              # go vet + go test
+task lint CONNECTOR=source-example              # golangci-lint
 task build CONNECTOR=source-example             # docker build for the local platform
 task spec CONNECTOR=source-example              # build, run `spec`, write spec.json
 task spec:check CONNECTOR=source-example        # fail if spec.json is stale
-task registry IMAGE_PREFIX=ghcr.io/acme/connectors   # write dist/registry.json
+task entry CONNECTOR=source-example             # print a connector's registry entry from the working tree
+task registry                                   # write dist/registry.json with every connector (working tree)
+go test ./scripts                               # the scripts' own tests
 ```
 
-See [CONNECTORS.md](CONNECTORS.md) for adding a connector.
+Image names default to `ghcr.io/<owner>/<repo>` of the `origin` remote; pass `IMAGE_PREFIX=...` to override.
+`go test -short ./...` in a connector skips the tests that need Docker.
 
-## Register the registry in Synclet
+### Building against a local synclet-go-sdk
 
-In Synclet open **Settings → Connectors → Add Repository** and enter a name and the registry URL,
-for example `https://acme.github.io/connectors/registry.json`. Synclet fetches the file immediately (the
-repository is not saved if that fails) and then re-syncs every `PIPELINE_JOB_REPOSITORY_SYNC_INTERVAL`
-(default `1h`); **Sync** on the repository refreshes it on demand. Connectors removed from the file, or
-marked `tombstone`, disappear from the catalog on the next sync.
+```bash
+task sdk:local SDK_DIR=../synclet-go-sdk                              # writes connectors/go.work (git-ignored)
+task spec CONNECTOR=source-example SDK_DIR=../synclet-go-sdk          # docker build --build-context sdk=../synclet-go-sdk
+```
 
-## Private registries
-
-There are two independent parts: the catalog (`registry.json`) and the images.
-
-### The catalog
-
-Synclet sends the repository's **Auth Header** value verbatim as the HTTP `Authorization` header on every
-registry fetch (it is stored encrypted). Any URL that accepts a static `Authorization` header works; Synclet
-cannot follow login redirects, use cookies, or send other headers.
-
-GitHub Pages of a private repository requires a browser login, so it cannot serve a private catalog to
-Synclet. Instead:
-
-1. Set the repository variable `REGISTRY_BRANCH` (for example `registry`) and, optionally,
-   `PUBLISH_PAGES=false` (**Settings → Secrets and variables → Actions → Variables**). The release workflow
-   then force-pushes a single-commit branch containing only `registry.json`.
-2. Create a fine-grained personal access token (or one for a machine user) with read-only **Contents**
-   access to this repository.
-3. In Synclet use
-   - URL: `https://raw.githubusercontent.com/<owner>/<repo>/registry/registry.json`
-   - Auth Header: `token <PAT>`
-
-Any other host works the same way, e.g. an internal web server or object storage behind a proxy that checks
-`Authorization: Bearer <token>`: publish `_site/registry.json` from the `registry` job wherever you need it.
-
-### The images
-
-Synclet never sends credentials when it pulls connector images itself, so private GHCR packages need
-credentials on the executor:
-
-- **Docker executor**: Synclet runs the image if it already exists locally and pulls it anonymously only when
-  it is missing. Log the Docker host in and pre-pull every released version:
-
-  ```bash
-  echo "$PAT" | docker login ghcr.io -u <user> --password-stdin   # PAT with read:packages
-  docker pull ghcr.io/<owner>/<repo>/<connector>:<version>
-  ```
-
-  Pre-pull again after each release; a new version that is not present locally fails to pull.
-- **Kubernetes executor**: create a pull secret in the namespace the executor launches pods in
-  (`K8S_EXECUTOR_NAMESPACE`) and set `K8S_EXECUTOR_IMAGE_PULL_SECRET` to its name. Synclet adds it to every
-  connector pod.
-
-  ```bash
-  kubectl -n <namespace> create secret docker-registry ghcr-pull \
-    --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT with read:packages>
-  ```
-
-  Node-level registry credentials (for example a kubelet credential provider) work as well.
+Each connector's Dockerfile has an empty `sdk` stage; `--build-context sdk=<dir>` replaces it, and the build then
+adds `replace github.com/synclet-io/synclet-go-sdk => <dir>` to the image's copy of `go.mod`. Nothing in the
+repository changes, so CI always builds against the published module.
 
 ## License
 
-The template itself (workflows, scripts, schema, docs and the example connector) is [MIT](LICENSE)
-licensed. Each connector declares its own license in the `license` field of its `meta.json`, which is
-published in the registry and shown in Synclet; it does not have to match this repository's license.
-Synclet hides entries licensed `Airbyte Enterprise`, so the schema rejects that value.
+[MIT](LICENSE). Each connector also declares its license in the `license` field of its `meta.json`, which is
+published in the registry and shown in Synclet.
+
+Airbyte is a trademark of Airbyte, Inc.; this project is not affiliated with or endorsed by Airbyte, Inc.

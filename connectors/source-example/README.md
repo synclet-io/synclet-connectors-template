@@ -1,13 +1,13 @@
 # source-example
 
-Minimal Go source built on [airbyte-go-sdk](https://github.com/saturn4er/airbyte-go-sdk).
+Minimal Go source built on [synclet-go-sdk](https://github.com/synclet-io/synclet-go-sdk).
 Emits `count` rows (default 10) into a single `numbers` stream with `id` and `label` columns.
 
-Copy this directory to start a new connector; see [CONNECTORS.md](../../CONNECTORS.md).
+Copy this directory to start a new connector; see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ```bash
 task test CONNECTOR=source-example
 task build CONNECTOR=source-example
 echo '{"count": 3}' > /tmp/config.json
-docker run --rm -v /tmp:/data ghcr.io/your-org/your-registry/source-example:dev check --config /data/config.json
+docker run --rm -v /tmp:/data ghcr.io/<owner>/<repo>/source-example:dev check --config /data/config.json
 ```
