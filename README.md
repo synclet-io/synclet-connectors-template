@@ -65,25 +65,21 @@ The `github-pages` environment this creates lets only `main` deploy, which is wh
 ### 4. Add a connector
 
 Copy `connectors/source-example`, write the connector, fill `meta.json` and generate `spec.json`;
-[CONTRIBUTING.md](CONTRIBUTING.md) walks through it. Add a package for it to `release-please-config.json` and its
-directory to `.release-please-manifest.json` at its `meta.json` version (`0.1.0`), or `task validate` fails.
+[CONTRIBUTING.md](CONTRIBUTING.md) walks through it. Add a package for it to `release-please-config.json` and keep
+`version` in `meta.json` at `0.1.0`, or `task validate` fails; leave it out of `.release-please-manifest.json`
+until its first release.
 Point `documentation_url` in `meta.json` and `DocumentationURL` in the spec at your repository, or delete
 `source-example` (its directory and its release-please entries) once you have your own connector.
 
 Open a pull request; CI validates the metadata and, for the changed connectors, runs vet, golangci-lint and
-`go test -race`, builds the image and checks `spec.json` against it. Right after merging, release the connector's
-first version, which creates its tag and the GitHub release that release-please counts later changes from. Close
-any release pull request release-please opened for the new connector before this release:
-
-```bash
-gh release create source-acme-v0.1.0 --target main --title "source-acme 0.1.0" --notes "Initial release"
-```
+`go test -race`, builds the image and checks `spec.json` against it. After merging, release-please opens the
+connector's first release pull request at `0.1.0`.
 
 ### 5. Release with release-please
 
 Later changes are released from [Conventional Commits](https://www.conventionalcommits.org) scoped to the
 connector directory, for example `fix(source-acme): retry on HTTP 429`. After each push to `main`, release-please
-opens or updates one pull request per connector with releasable changes, `chore(<dir>): release <version>`, which
+opens or updates one pull request per connector with releasable changes, `chore: release <dir> <version>`, which
 bumps `meta.json`, the manifest and the connector's `CHANGELOG.md`. Dependabot opens weekly `fix` pull requests per
 connector directory, so dependency bumps are released too.
 
