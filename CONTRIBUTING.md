@@ -26,7 +26,6 @@ Start from `source-example`, a minimal source built on
 ```bash
 cp -r connectors/source-example connectors/source-acme
 # edit go.mod (module name), the Go code, .gitignore, .dockerignore, meta.json, README.md
-# and the image name in image_test.go
 ```
 
 Connectors written in Go on synclet-go-sdk get vet, lint and tests in CI and use ordinary Go libraries for
@@ -160,8 +159,10 @@ version. A failed release can be re-run from **Actions → Release → Run workf
 
 A new connector needs a package in `release-please-config.json` (copy another connector's) and its directory
 in `.release-please-manifest.json` at its `meta.json` version; `task validate` fails until both are there.
-After merging, release its first version by hand, which creates the tag `<dir>-v0.1.0` that starts the
-release workflow and the GitHub release release-please counts later changes from:
+Right after merging the pull request that adds it, release its first version by hand, which creates the tag
+`<dir>-v0.1.0` that starts the release workflow and the GitHub release release-please counts later changes from.
+If release-please already opened a release pull request for the new connector, close it; it reopens with the
+right version on the next releasable commit:
 
 ```bash
 gh release create source-acme-v0.1.0 --target main --title "source-acme 0.1.0" --notes "Initial release"

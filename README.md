@@ -25,8 +25,14 @@ the template repository (synclet-io/synclet-connectors-template) itself.
 ### 1. Create your repository
 
 Click **Use this template → Create a new repository** on
-[synclet-io/synclet-connectors-template](https://github.com/synclet-io/synclet-connectors-template). The repository
-can be public or private; the images must be public either way (see step 6).
+[synclet-io/synclet-connectors-template](https://github.com/synclet-io/synclet-connectors-template). Make the
+repository **public**: Synclet fetches `registry.json` and pulls the images anonymously. GitHub Pages of a private
+repository needs a paid plan, and on Enterprise Cloud it can be restricted to organization members, which
+Synclet cannot fetch; a private repository works only with Pages visibility set to public (and the images made
+public, step 6).
+
+The first Release Please run, started by the repository's creation, fails because the App secrets do not exist
+yet; re-run it from **Actions → Release Please** after step 2.
 
 ### 2. Create a GitHub App for releases
 
@@ -65,8 +71,9 @@ Point `documentation_url` in `meta.json` and `DocumentationURL` in the spec at y
 `source-example` (its directory and its release-please entries) once you have your own connector.
 
 Open a pull request; CI validates the metadata and, for the changed connectors, runs vet, golangci-lint and
-`go test -race`, builds the image and checks `spec.json` against it. After merging, release the connector's first
-version, which creates its tag and the GitHub release that release-please counts later changes from:
+`go test -race`, builds the image and checks `spec.json` against it. Right after merging, release the connector's
+first version, which creates its tag and the GitHub release that release-please counts later changes from. Close
+any release pull request release-please opened for the new connector before this release:
 
 ```bash
 gh release create source-acme-v0.1.0 --target main --title "source-acme 0.1.0" --notes "Initial release"

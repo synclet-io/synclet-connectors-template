@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -17,7 +18,13 @@ func TestImageSpecMatchesSpecJSON(t *testing.T) {
 		t.Skip("builds the connector image in Docker; skipped under -short")
 	}
 
-	const image = "local/source-example:test"
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connector := filepath.Base(wd)
+	image := "local/" + connector + ":test"
 
 	build := exec.CommandContext(t.Context(), "docker", "build", "-q", "-t", image, ".")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -61,6 +68,6 @@ func TestImageSpecMatchesSpecJSON(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("image spec differs from spec.json; run: task spec CONNECTOR=source-example")
+		t.Errorf("image spec differs from spec.json; run: task spec CONNECTOR=%s", connector)
 	}
 }
